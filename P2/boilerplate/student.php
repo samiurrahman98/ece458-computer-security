@@ -343,8 +343,14 @@ function sites(&$request, &$response, &$db) {
     $db = new PDO("sqlite:passwordsafe.db");
     $stmt = $db->prepare("SELECT siteid, site FROM user_safe NATURAL JOIN user_session where sessionid = ?");
     $stmt->execute(array($session_id));
-    $site_ids = $stmt->fetchColumn();
-    $sites = $stmt->fetchColumn();
+    $sites = [];
+    $site_ids = [];
+
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+      array_push($site_ids, $row['siteid']);
+      array_push($sites, $row['site']);
+    }
+    
     $stmt = null;
 
     $db = null;
@@ -370,31 +376,43 @@ function sites(&$request, &$response, &$db) {
  * If the session is invalid, it should return 401 unauthorized.
  */
 function save(&$request, &$response, &$db) {
-  $master_key = $request->param("masterKey");
-  $site       = $request->param("site");
-  $siteuser   = $request->param("siteuser");
-  $sitepasswd = $request->param("sitepasswd");
+  $site_id      = $request->param("siteid");
+  $site         = $request->param("site");
+  $site_user    = $request->param("siteuser");
+  $site_passwd  = $request->param("sitepasswd");
+  $site_iv      = $request->param("siteiv");
 
   // only care about user session here
   $session_id = $request->token("sessionId");
   if (is_user_session_valid($session_id)) {
-    // encrypt site password using master password
-    $initialization_vector = bin2hex(random_bytes(16));
-    $password = bin2hex(openssl_encrypt($sitepasswd, "AES-256-CBC", hex2bin($master_key), OPENSSL_RAW_DATA, $initialization_vector));
 
-    // check if site already exists
+    // check if site id exists
+    $stmt = $db->prepare("SELECT count(*) FROM user_safe where siteid = ?");
+    $stmt->execute(array($site_id));
+    $count = $stmt->fetch(PDO::FETCH_COLUMN);
+    $stmt = null;
 
-    $db = new PDO("sqlite:passwordsafe.db");
-    $stmt = $db->prepare("INSERT INTO user_safe (siteid, username, site, siteuser, sitepasswd, siteiv, modified) VALUES (, )");
-    $stmt->execute(array($session_id));
-    $site_ids = $stmt->fetchColumn();
-    $sites = $stmt->fetchColumn();
+    if (!$count) {
+      // site id doesn't exist - INSERT new record
+      // get username from session id
+      $db = new PDO("sqlite:passwordsafe.db");
+      $stmt = $db->prepare("SELECT username FROM user_session where sessionid = ?");
+      $stmt->execute(array($session_id));
+      $username = $stmt->fetch(PDO::FETCH_COLUMN);
+      $stmt = null;
+
+      $stmt = $db->prepare("INSERT INTO user_safe (username, site, siteuser, sitepasswd, siteiv, modified) VALUES (:un, :st, :stuser, :stpwd, :stiv, datetime('now'))");
+      $stmt->execute(['un' => $username, 'st' => $site, 'stuser' => $site_user, 'stpwd' => $site_passwd, 'stiv' => $site_iv]);
+    } else {
+      // site id exists - UPDATE existing record
+      $stmt = $db->prepare("UPDATE user_safe SET siteuser = :stuser, sitepasswd = :stpwd, siteiv = :stiv, modified = datetime('now') WHERE siteid = :stid");
+      $stmt->execute(['stuser' => $site_user, 'stpwd' => $site_passwd, 'stiv' => $site_iv, 'stid' => $site_id]);
+    }
+
     $stmt = null;
 
     $db = null;
 
-    $response->set_data("siteids", $site_ids);
-    $response->set_data("sites", $sites);
     $response->set_http_code(200);
     $response->success("Save to safe succeeded.");
     log_to_console("Successfully saved site data");
@@ -414,15 +432,38 @@ function save(&$request, &$response, &$db) {
  * If the session is invalid return 401, if the site doesn't exist return 404.
  */
 function load(&$request, &$response, &$db) {
-  $site = $request->param("site");
+  $session_id = $request->token("sessionId");
+  $site_id = $request->param("siteid");
 
-  $response->set_data("site", $site);
+  if (is_user_session_valid($session_id)) {
+    $db = new PDO("sqlite:passwordsafe.db");
+    $stmt = $db->prepare("SELECT site, siteuser, sitepasswd, siteiv FROM user_safe where siteid = ?");
+    $stmt->execute(array($site_id));
+    $result = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt = null;
 
-  $response->set_http_code(200); // OK
-  $response->success("Site data retrieved.");
-  log_to_console("Successfully retrieved site data");
+    $site = $result['site'];
+    $site_user = $result['siteuser'];
+    $site_passwd = $result['sitepasswd'];
+    $site_iv = $result['siteiv'];
 
-  return true;
+    $response->set_data("site", $site);
+    $response->set_data("siteuser", $site_user);
+    $response->set_data("sitepasswd", $site_passwd);
+    $response->set_data("siteiv", $site_iv);
+    $response->set_http_code(200);
+    $response->success("Site data retrieved.");
+    log_to_console("Successfully retrieved site data");
+
+    return true;
+  }
+
+  $response->set_http_code(401);
+  $response->set_token("sessionId", "");
+  $response->failure("Your session has expired.");
+  log_to_console("User session expired");
+  return false;
+
 }
 
 /**
@@ -444,6 +485,7 @@ function logout(&$request, &$response, &$db) {
     $stmt = null;
 
     $response->set_http_code(200);
+    $response->set_token("sessionId", "");
     $response->success("Successfully logged out.");
     log_to_console("Logged out");
 

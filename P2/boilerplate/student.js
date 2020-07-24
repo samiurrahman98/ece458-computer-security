@@ -187,16 +187,18 @@ function save(siteIdInput, siteInput, userInput, passInput) {
   var siteid     = siteIdInput.value,
       site       = siteInput.value,
       siteuser   = userInput.value,
-      sitepasswd = passInput.value,
-      encrypted; // this will need to be populated
-  
-  // send the data, along with the encrypted password, to the server
-  serverRequest("save",  // the resource to call
-                {"masterKey": sessionStorage.getItem("masterKey"), "siteid":siteid, "site":site, "siteuser":siteuser, "sitepasswd":encrypted} // this should be populated with any parameters the server needs
-  ).then(function(result) {
-    if (result.response.ok) {
-      // any work after a successful save should be done here
+      sitepasswd = passInput.value;
 
+  var masterKey = sessionStorage.getItem("masterKey");
+  var siteiv = randomBytes(16);
+
+  hash(masterKey).then(function (hexMasterKey) {
+    return encrypt(sitepasswd, hexMasterKey, siteiv);
+  })
+  .then(function(encryptedPassword) {
+    return serverRequest("save", {"siteid": siteid, "site": site, "siteuser": siteuser, "sitepasswd": encryptedPassword, "siteiv": siteiv}); // this should be populated with any parameters the server needs
+  }).then(function(result) {
+    if (result.response.ok) {
       // update the sites list
       sites("save");
     }
@@ -219,7 +221,24 @@ function loadSite(siteid, siteIdElement, siteElement, userElement, passElement) 
                 {"siteid":siteid} // populate with any parameters the server needs
   ).then(function(result) {
     if (result.response.ok) {
-      // do any work that needs to be done on success
+      var site = result.json.site;
+      var siteuser = result.json.siteuser;
+      var sitepasswd = result.json.sitepasswd;
+      var siteiv = result.json.siteiv;
+      
+      // decrypt sitepasswd
+
+      hash(sessionStorage.getItem("masterKey")).then(function (hexMasterKey) {
+        return decrypt(sitepasswd, hexMasterKey, siteiv);
+      }).then(function (decryptedPassword) {
+        var localSiteElement   = document.querySelector("output[name=site]");
+        var localUserElement   = document.querySelector("output[name=siteuser]");
+        var localPassElement   = document.querySelector("output[name=sitepasswd]");
+
+        localSiteElement.value = site;
+        localUserElement.value = siteuser;
+        localPassElement.value = decryptedPassword;
+      });
 
     } else {
       // on failure, show the login page and display any server status
