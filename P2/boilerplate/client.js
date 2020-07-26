@@ -384,7 +384,7 @@ function loadSiteWrapper(event) {
   // if add new was selected, clear the inputs
   if (selected.value == "default") {
     if (siteIdInput) {
-      siteIdInput.value = "";
+      siteIdElement.value = "";
     }
     siteElement.value = "";
     userElement.value = "";

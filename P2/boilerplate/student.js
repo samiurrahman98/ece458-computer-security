@@ -184,14 +184,17 @@ function signup(userInput, passInput, passInput2, emailInput, fullNameInput) {
  * Called when the add password form is submitted.
  */
 function save(siteIdInput, siteInput, userInput, passInput) {
-  var siteid = sessionStorage.getItem("siteid");
-  sessionStorage.setItem("siteid", "");
-  if (!siteid)
-    siteid = siteIdInput.value;
+  // has to be implemented this way because we can't edit the client code
+  // if site credentials are retrieved on load page, the site id is saved in the hidden input field
+  // this input field value is not reset if you navigate away from the load page
+  // the siteIdInput element stores the value from the load page and even if an existing site is not selected
+  // on the save page, the site id is still populated and therefore the site id is sent to the server
+  // making the server believe that an update is being performed instead of an insertion
+  var siteid = document.querySelector("select[name=sitelist]").selectedIndex == 0 ? "" : siteIdInput.value
 
-    var site     = siteInput.value,
-      siteuser   = userInput.value,
-      sitepasswd = passInput.value;
+  var site     = siteInput.value,
+    siteuser   = userInput.value,
+    sitepasswd = passInput.value;
 
   var masterKey = sessionStorage.getItem("masterKey");
   var siteiv = randomBytes(16);
@@ -219,7 +222,6 @@ function save(siteIdInput, siteInput, userInput, passInput) {
  * a form element.
  */
 function loadSite(siteid, siteIdElement, siteElement, userElement, passElement) {
-
   serverRequest("load", // the resource to call
                 {"siteid":siteid} // populate with any parameters the server needs
   ).then(function(result) {
@@ -234,10 +236,13 @@ function loadSite(siteid, siteIdElement, siteElement, userElement, passElement) 
       hash(sessionStorage.getItem("masterKey")).then(function (hexMasterKey) {
         return decrypt(sitepasswd, hexMasterKey, siteiv);
       }).then(function (decryptedPassword) {
+        if (siteIdElement)
+          siteIdElement.value = siteid;
+
         siteElement.value = site;
         userElement.value = siteuser;
         passElement.value = decryptedPassword;
-        sessionStorage.setItem("siteid", siteid);
+        // sessionStorage.setItem("siteid", siteid);
       });
 
     } else {
