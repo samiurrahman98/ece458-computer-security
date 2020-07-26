@@ -393,7 +393,8 @@ function save(&$request, &$response, &$db) {
     $stmt = null;
 
     if (!$count) {
-      // site id doesn't exist - INSERT new record
+      // if site id wasn't passed, check if username + site combination exists in table
+
       // get username from session id
       $db = new PDO("sqlite:passwordsafe.db");
       $stmt = $db->prepare("SELECT username FROM user_session where sessionid = ?");
@@ -401,9 +402,22 @@ function save(&$request, &$response, &$db) {
       $username = $stmt->fetch(PDO::FETCH_COLUMN);
       $stmt = null;
 
-      $stmt = $db->prepare("INSERT INTO user_safe (username, site, siteuser, sitepasswd, siteiv, modified) VALUES (:un, :st, :stuser, :stpwd, :stiv, datetime('now'))");
-      $stmt->execute(['un' => $username, 'st' => $site, 'stuser' => $site_user, 'stpwd' => $site_passwd, 'stiv' => $site_iv]);
-      log_to_console("Inserted site data");
+      $stmt = $db->prepare("SELECT siteid FROM user_safe WHERE username = :un and site = :st");
+      $stmt->execute(["un" => $username, "st" => $site]);
+      $existing_site_id = $stmt->fetch(PDO::FETCH_COLUMN);
+      $stmt = null;
+
+      if (!$existing_site_id) {
+        // username + website combination does not exist
+        $stmt = $db->prepare("INSERT INTO user_safe (username, site, siteuser, sitepasswd, siteiv, modified) VALUES (:un, :st, :stuser, :stpwd, :stiv, datetime('now'))");
+        $stmt->execute(['un' => $username, 'st' => $site, 'stuser' => $site_user, 'stpwd' => $site_passwd, 'stiv' => $site_iv]);
+        log_to_console("Inserted site data");
+      } else {
+        // username + website combination exists
+        $stmt = $db->prepare("UPDATE user_safe SET siteuser = :stuser, sitepasswd = :stpwd, siteiv = :stiv, modified = datetime('now') WHERE siteid = :stid");
+        $stmt->execute(['stuser' => $site_user, 'stpwd' => $site_passwd, 'stiv' => $site_iv, 'stid' => $existing_site_id]);
+        log_to_console("Updated site data");
+      }
     } else {
       // site id exists - UPDATE existing record
       $stmt = $db->prepare("UPDATE user_safe SET siteuser = :stuser, sitepasswd = :stpwd, siteiv = :stiv, modified = datetime('now') WHERE siteid = :stid");
