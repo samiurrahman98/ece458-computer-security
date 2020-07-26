@@ -184,8 +184,12 @@ function signup(userInput, passInput, passInput2, emailInput, fullNameInput) {
  * Called when the add password form is submitted.
  */
 function save(siteIdInput, siteInput, userInput, passInput) {
-  var siteid     = siteIdInput.value,
-      site       = siteInput.value,
+  var siteid = sessionStorage.getItem("siteid");
+  sessionStorage.setItem("siteid", "");
+  if (!siteid)
+    siteid = siteIdInput.value;
+
+    var site     = siteInput.value,
       siteuser   = userInput.value,
       sitepasswd = passInput.value;
 
@@ -215,7 +219,6 @@ function save(siteIdInput, siteInput, userInput, passInput) {
  * a form element.
  */
 function loadSite(siteid, siteIdElement, siteElement, userElement, passElement) {
-  // do any preprocessing here
 
   serverRequest("load", // the resource to call
                 {"siteid":siteid} // populate with any parameters the server needs
@@ -231,13 +234,10 @@ function loadSite(siteid, siteIdElement, siteElement, userElement, passElement) 
       hash(sessionStorage.getItem("masterKey")).then(function (hexMasterKey) {
         return decrypt(sitepasswd, hexMasterKey, siteiv);
       }).then(function (decryptedPassword) {
-        var localSiteElement   = document.querySelector("output[name=site]");
-        var localUserElement   = document.querySelector("output[name=siteuser]");
-        var localPassElement   = document.querySelector("output[name=sitepasswd]");
-
-        localSiteElement.value = site;
-        localUserElement.value = siteuser;
-        localPassElement.value = decryptedPassword;
+        siteElement.value = site;
+        userElement.value = siteuser;
+        passElement.value = decryptedPassword;
+        sessionStorage.setItem("siteid", siteid);
       });
 
     } else {

@@ -403,10 +403,12 @@ function save(&$request, &$response, &$db) {
 
       $stmt = $db->prepare("INSERT INTO user_safe (username, site, siteuser, sitepasswd, siteiv, modified) VALUES (:un, :st, :stuser, :stpwd, :stiv, datetime('now'))");
       $stmt->execute(['un' => $username, 'st' => $site, 'stuser' => $site_user, 'stpwd' => $site_passwd, 'stiv' => $site_iv]);
+      log_to_console("Inserted site data");
     } else {
       // site id exists - UPDATE existing record
       $stmt = $db->prepare("UPDATE user_safe SET siteuser = :stuser, sitepasswd = :stpwd, siteiv = :stiv, modified = datetime('now') WHERE siteid = :stid");
       $stmt->execute(['stuser' => $site_user, 'stpwd' => $site_passwd, 'stiv' => $site_iv, 'stid' => $site_id]);
+      log_to_console("Updated site data");
     }
 
     $stmt = null;
@@ -447,6 +449,7 @@ function load(&$request, &$response, &$db) {
     $site_passwd = $result['sitepasswd'];
     $site_iv = $result['siteiv'];
 
+    // $response->set_data("siteid", $site_id);
     $response->set_data("site", $site);
     $response->set_data("siteuser", $site_user);
     $response->set_data("sitepasswd", $site_passwd);
