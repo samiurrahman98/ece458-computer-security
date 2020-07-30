@@ -111,6 +111,10 @@
  * 
  *****************************************************************************/
 
+// global variables
+
+$recognized_origins = ['http://localhost:8000'];
+$recognized_ips     = ['::1'];
 
 /**
  * Performs any resource agnostic preflight validation and can set generic response values.
@@ -120,17 +124,17 @@
  */
 function preflight(&$request, &$response, &$db) {
   // check if sessionId is set
-  $session_id = $request->token("sessionId");
+  $web_session_id = $request->cookie("webSessionId");
 
-  if (!empty($session_id)) {
-    if (is_web_session_valid($session_id)) {
+  if (!empty($web_session_id)) {
+    if (is_web_session_valid($web_session_id)) {
       $response->set_http_code(200);
       $response->success("Request OK");
       log_to_console("OK");
       return true;
     } else {
       $response->set_http_code(401);
-      $response->set_token("sessionId", "");
+      $response->delete_cookie("webSessionId");
       $response->failure("Your session has expired.");
       log_to_console("Web session expired");
       return false;
@@ -138,23 +142,27 @@ function preflight(&$request, &$response, &$db) {
   } else {
     // check client origin
     $client_origin = $request->header("Origin");
+    $client_ip = $request->client_ip();
 
-    if (!empty($client_origin)) {
-      $recognized_origins = ['http://localhost:8000'];
-      // check if origin belongs to list of recognized origins
-      if (in_array($client_origin, $recognized_origins)) {
+    if (!empty($client_origin) && !empty($client_ip)) {
 
-        // create new web session with IP as unique identifier until client has authenticated; give them at most 5 mins (consider initializing # login attempts)
-        $client_ip = $request->client_ip();
+      global $recognized_origins, $recognized_ips;
+
+      if (in_array($client_origin, $recognized_origins) && in_array($client_ip, $recognized_ips)) {
+        // create new web session with metadata holding  as unique identifier until client has authenticated; give them 12 hours
+        $web_session_id = bin2hex(random_bytes(32));
+        $metadata = json_encode((object) ['origin' => $client_origin, 'ip' => $client_ip]);
+
         $db = new PDO("sqlite:passwordsafe.db");
-        $stmt = $db->prepare("INSERT INTO web_session (sessionId, expires) VALUES (:ssn, datetime('now', '+5 minutes')) ON CONFLICT(sessionId) DO UPDATE SET expires = datetime('now', '+5 minutes')");
-        $stmt->execute(['ssn' => $client_ip]);
+        $stmt = $db->prepare("INSERT INTO web_session (sessionId, expires, metadata) VALUES (:ssn, datetime('now', '+12 hours'), :md)");
+        $stmt->execute(['ssn' => $web_session_id, 'md' => $metadata]);
         $stmt = null;
 
         $db = null;
 
         $response->set_http_code(200);
-        $response->set_token("sessionId", $client_ip);
+        $session_expiry = time() + 43200;
+        $response->add_cookie("webSessionId", $web_session_id, $session_expiry);
         $response->success("Request OK");
         log_to_console("OK");
         return true;
@@ -276,7 +284,7 @@ function login(&$request, &$response, &$db) {
   $username = $request->param("username"); // The username with which to log in
   $client_ciphertext = $request->param("ciphertext"); // The ciphertext (encrypted challenge)
   $initialization_vector = hex2bin($request->param("initializationVector")); // change to binary data
-  $web_session_id = $request->token("sessionId");
+  $web_session_id = $request->cookie("webSessionId");
 
   $db = new PDO("sqlite:passwordsafe.db");
   $stmt = $db->prepare("SELECT passwd, challenge, fullname, expires FROM user NATURAL JOIN user_login where username = ?");
@@ -288,24 +296,32 @@ function login(&$request, &$response, &$db) {
   $key = $result['passwd'];
   $challenge = $result['challenge'];
   $fullname = $result['fullname'];
-  $challenge_expiry = $result['expires'];
+  $challenge_expiry = new DateTime($result['expires']);
 
   // hex encoded ciphertext since js encrypt function returns hex-encoded ciphertext
   $server_ciphertext = bin2hex(openssl_encrypt($challenge, "AES-256-CBC", hex2bin($key), OPENSSL_RAW_DATA, $initialization_vector));
   $now = new DateTime();
 
-  if (strcmp($server_ciphertext, $client_ciphertext) == 0 && $challenge_expiry < $now) {
+  if (strcmp($server_ciphertext, $client_ciphertext) == 0 && $challenge_expiry > $now) {
 
-    // create session lasting 10 mins
-    $session_id = bin2hex(random_bytes(32));
-    $stmt = $db->prepare("INSERT INTO user_session (sessionid, username, expires) VALUES (:ssn, :uname, datetime('now', '+10 minutes'))");
-    $stmt->execute(['ssn' => $session_id, 'uname' => $username]);
-    $stmt = null;
+    $user_session_id = bin2hex(random_bytes(32));
 
-    // update web session so session id from user_session = web_session
-    $stmt = $db->prepare("UPDATE web_session SET sessionid = :user_ssn, expires = datetime('now', '+10 minutes') WHERE sessionid = :web_ssn");
-    $stmt->execute(['user_ssn' => $session_id, 'web_ssn' => $web_session_id]);
-    $stmt = null;
+    // first check if user had existing record in user_session table that expired and wasn't terminated because user didn't explicitly log out
+    // session lasting 10 mins
+    $stmt = $db->prepare("UPDATE user_session SET sessionid = :user_ssn, expires = datetime('now', '+15 minutes') WHERE username = :uname");
+    $stmt->execute(['user_ssn' => $user_session_id, 'uname' => $username]);
+    $updated = $stmt->rowCount();
+    if (!$updated) {
+      $stmt = null;
+      $stmt = $db->prepare("INSERT INTO user_session (sessionid, username, expires) VALUES (:ssn, :uname, datetime('now', '+15 minutes'))");
+      $stmt->execute(['ssn' => $user_session_id, 'uname' => $username]);
+      $stmt = null;
+    }
+
+    // update web session expiry to same time as user session
+    // $stmt = $db->prepare("UPDATE web_session SET expires = datetime('now', '+10 minutes') WHERE sessionid = ?");
+    // $stmt->execute(array($web_session_id));
+    // $stmt = null;
 
     // update user to validate account given user has logged in after creation
     $stmt = $db->prepare("UPDATE user SET valid = :vd, modified = datetime('now') WHERE username = :un");
@@ -315,7 +331,10 @@ function login(&$request, &$response, &$db) {
     $db = null;
 
     $response->set_http_code(200); // OK
-    $response->set_token("sessionId", $session_id); // send client copy of session id to make subsequent requests with
+    $session_expiry = time() + 900;
+    // $response->delete_cookie("webSessionId");
+    // $response->add_cookie("webSessionId", $web_session_id, $session_expiry);
+    $response->add_cookie("userSessionId", $user_session_id, $session_expiry);
     $response->set_data("fullname", $fullname);
     $response->success("Successfully logged in.");
     log_to_console("Session created.");
@@ -338,11 +357,13 @@ function login(&$request, &$response, &$db) {
  */
 function sites(&$request, &$response, &$db) {
   // only care about user session here
-  $session_id = $request->token("sessionId");
-  if (is_user_session_valid($session_id)) {
+  $user_session_id = $request->cookie("userSessionId");
+  $web_session_id = $request->cookie("webSessionId");
+
+  if (is_user_session_valid($user_session_id)) {
     $db = new PDO("sqlite:passwordsafe.db");
     $stmt = $db->prepare("SELECT siteid, site FROM user_safe NATURAL JOIN user_session where sessionid = ?");
-    $stmt->execute(array($session_id));
+    $stmt->execute(array($user_session_id));
     $sites = [];
     $site_ids = [];
 
@@ -364,7 +385,8 @@ function sites(&$request, &$response, &$db) {
   }
 
   $response->set_http_code(401);
-  $response->set_token("sessionId", "");
+  // $response->delete_cookie("webSessionId");
+  $response->delete_cookie("userSessionId");
   $response->failure("Your session has expired.");
   log_to_console("User session expired");
   return false;
@@ -383,8 +405,10 @@ function save(&$request, &$response, &$db) {
   $site_iv      = $request->param("siteiv");
 
   // only care about user session here
-  $session_id = $request->token("sessionId");
-  if (is_user_session_valid($session_id)) {
+  $user_session_id = $request->cookie("userSessionId");
+  $web_session_id = $request->cookie("webSessionId");
+
+  if (is_user_session_valid($user_session_id)) {
 
     // check if site id exists
     $stmt = $db->prepare("SELECT count(*) FROM user_safe where siteid = ?");
@@ -398,7 +422,7 @@ function save(&$request, &$response, &$db) {
       // get username from session id
       $db = new PDO("sqlite:passwordsafe.db");
       $stmt = $db->prepare("SELECT username FROM user_session where sessionid = ?");
-      $stmt->execute(array($session_id));
+      $stmt->execute(array($user_session_id));
       $username = $stmt->fetch(PDO::FETCH_COLUMN);
       $stmt = null;
 
@@ -420,8 +444,8 @@ function save(&$request, &$response, &$db) {
       }
     } else {
       // site id exists - UPDATE existing record
-      $stmt = $db->prepare("UPDATE user_safe SET siteuser = :stuser, sitepasswd = :stpwd, siteiv = :stiv, modified = datetime('now') WHERE siteid = :stid");
-      $stmt->execute(['stuser' => $site_user, 'stpwd' => $site_passwd, 'stiv' => $site_iv, 'stid' => $site_id]);
+      $stmt = $db->prepare("UPDATE user_safe SET site = :st, siteuser = :stuser, sitepasswd = :stpwd, siteiv = :stiv, modified = datetime('now') WHERE siteid = :stid");
+      $stmt->execute(['st' => $site, 'stuser' => $site_user, 'stpwd' => $site_passwd, 'stiv' => $site_iv, 'stid' => $site_id]);
       log_to_console("Updated site data");
     }
 
@@ -436,7 +460,8 @@ function save(&$request, &$response, &$db) {
   }
 
   $response->set_http_code(401);
-  $response->set_token("sessionId", "");
+  // $response->delete_cookie("webSessionId");
+  $response->delete_cookie("userSessionId");
   $response->failure("Your session has expired.");
   log_to_console("User session expired");
   return false;
@@ -448,10 +473,11 @@ function save(&$request, &$response, &$db) {
  * If the session is invalid return 401, if the site doesn't exist return 404.
  */
 function load(&$request, &$response, &$db) {
-  $session_id = $request->token("sessionId");
+  $user_session_id = $request->cookie("userSessionId");
+  $web_session_id = $request->cookie("webSessionId");
   $site_id = $request->param("siteid");
 
-  if (is_user_session_valid($session_id)) {
+  if (is_user_session_valid($user_session_id)) {
     $db = new PDO("sqlite:passwordsafe.db");
     $stmt = $db->prepare("SELECT site, siteuser, sitepasswd, siteiv FROM user_safe where siteid = ?");
     $stmt->execute(array($site_id));
@@ -476,7 +502,8 @@ function load(&$request, &$response, &$db) {
   }
 
   $response->set_http_code(401);
-  $response->set_token("sessionId", "");
+  // $response->delete_cookie("webSessionId");
+  $response->delete_cookie("userSessionId");
   $response->failure("Your session has expired.");
   log_to_console("User session expired");
   return false;
@@ -488,21 +515,23 @@ function load(&$request, &$response, &$db) {
  * Delete the associated session if one exists.
  */
 function logout(&$request, &$response, &$db) {
-  $session_id = $request->token("sessionId"); // terminate session given id
+  // $web_session_id = $request->cookie("webSessionId");
+  $user_session_id = $request->cookie("userSessionId"); // terminate session given id
 
-  if (!empty($session_id)) {
+  if (!empty($user_session_id)) {
     // delete from both web and user session
     $db = new PDO("sqlite:passwordsafe.db");
     $stmt = $db->prepare("DELETE FROM user_session where sessionid = ?");
-    $stmt->execute(array($session_id));
+    $stmt->execute(array($user_session_id));
     $stmt = null;
 
-    $stmt = $db->prepare("DELETE FROM web_session where sessionid = ?");
-    $stmt->execute(array($session_id));
-    $stmt = null;
+    // $stmt = $db->prepare("DELETE FROM web_session where sessionid = ?");
+    // $stmt->execute(array($web_session_id));
+    // $stmt = null;
 
     $response->set_http_code(200);
-    $response->set_token("sessionId", "");
+    // $response->delete_cookie("webSessionId");
+    $response->delete_cookie("userSessionId");
     $response->success("Successfully logged out.");
     log_to_console("Logged out");
 
@@ -518,10 +547,10 @@ function logout(&$request, &$response, &$db) {
 
 // my utility functions
 
-function is_user_session_valid($session_id) {
+function is_user_session_valid($user_session_id) {
   $db = new PDO("sqlite:passwordsafe.db");
   $stmt = $db->prepare("SELECT count(*) FROM user_session WHERE sessionid = ? and expires > datetime('now')");
-  $stmt->execute(array($session_id));
+  $stmt->execute(array($user_session_id));
   $count = $stmt->fetch(PDO::FETCH_COLUMN);
   
   $stmt = null;
@@ -531,13 +560,15 @@ function is_user_session_valid($session_id) {
     return true;
   }
 
-  // delete from both web and user session
-  $stmt = $db->prepare("DELETE FROM web_session where sessionid = ?");
-  $stmt->execute(array($session_id));
-  $stmt = null;
+  // log_to_console("Web session ID: " . $web_session_id);
+  // $stmt = $db->prepare("DELETE FROM web_session where sessionid = ?");
+  // $stmt->execute(array($web_session_id));
+  // $stmt = null;
 
+  // delete user session
+  log_to_console("User session ID: " . $user_session_id);
   $stmt = $db->prepare("DELETE FROM user_session where sessionid = ?");
-  $stmt->execute(array($session_id));
+  $stmt->execute(array($user_session_id));
   $stmt = null;
 
   $db = null;
@@ -545,22 +576,30 @@ function is_user_session_valid($session_id) {
   return false;
 }
 
-function is_web_session_valid($session_id) {
+function is_web_session_valid($web_session_id) {
   $db = new PDO("sqlite:passwordsafe.db");
-  $stmt = $db->prepare("SELECT count(*) FROM web_session WHERE sessionid = ? and expires > datetime('now')");
-  $stmt->execute(array($session_id));
-  $count = $stmt->fetch(PDO::FETCH_COLUMN);
+  $stmt = $db->prepare("SELECT metadata FROM web_session WHERE sessionid = ? and expires > datetime('now')");
+  $stmt->execute(array($web_session_id));
+  $json_metadata = $stmt->fetch(PDO::FETCH_COLUMN);
   
   $stmt = null;
 
-  if ($count > 0) {
-    $db = null;
-    return true;
+  if ($json_metadata) {
+    $metadata = json_decode($json_metadata, true);
+    $client_origin = $metadata['origin'];
+    $client_ip = $metadata['ip'];
+
+    global $recognized_origins, $recognized_ips;
+
+    if (in_array($client_origin, $recognized_origins) && in_array($client_ip, $recognized_ips)) {
+      $db = null;
+      return true;
+    }
   }
 
   // delete from web session
   $stmt = $db->prepare("DELETE FROM web_session where sessionid = ?");
-  $stmt->execute(array($session_id));
+  $stmt->execute(array($web_session_id));
   $stmt = null;
 
   $db = null;

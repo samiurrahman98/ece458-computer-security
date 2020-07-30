@@ -159,8 +159,13 @@ function signup(userInput, passInput, passInput2, emailInput, fullNameInput) {
       fullname  = fullNameInput.value;
 
   // do any preprocessing on the user input here before sending to the server
+
+  var re = new RegExp("((?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[\W]).{8,})");
+
   if (password !== password2) {
     status('Password fields do not match!')
+  } else if (!re.test(password)) {
+    status('Your password must contain a minimum of 8 characters, and at least one uppercase letter, lowercase letter, number, and special character.');
   } else {
     // send the signup form to the server
     serverRequest("signup",  // resource to call
