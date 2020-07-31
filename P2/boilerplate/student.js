@@ -130,7 +130,7 @@ function login(userInput, passInput) {
           sessionStorage.setItem("masterKey", password);
           
           // display the user's full name in the userdisplay field
-          document.getElementById("userdisplay").innerHTML = result.json.fullname;
+          document.getElementById("userdisplay").innerHTML = escapeHTML(result.json.fullname);
           // userdisplay refers to the DOM element that students will need to
           // update to show the data returned by the server.
         
@@ -270,4 +270,15 @@ function logout() {
     }
     serverStatus(result);
   });
+}
+
+// utility functions
+function escapeHTML (unsafe_str) {
+  return unsafe_str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\"/g, '&quot;')
+    .replace(/\'/g, '&#39;')
+    .replace(/\//g, '&#x2F;')
 }
