@@ -253,7 +253,7 @@ function identify(&$request, &$response, &$db) {
   if (!empty($salt)) {
 
     // generate and store challenge
-    $challenge = bin2hex(random_bytes(random_int(64, 127)));
+    $challenge = bin2hex(random_bytes(64));
     $stmt = $db->prepare("UPDATE user_login SET challenge = ?, expires = datetime('now', '+10 seconds') WHERE username = ?");
     $stmt->execute([$challenge, $username]);
     $stmt = null;
